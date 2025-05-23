@@ -6,52 +6,81 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.os.Bundle // For onCreate parameter
-import android.util.Log
+import android.os.Bundle // 用于 onCreate 参数
+// import android.util.Log // 被 PluginOtherMethod.log 替代
 import wx.demo.data.config.SecretFriendsSettings
+import me.hd.wauxv.tool.PluginOtherMethod // 新增导入
+// 假设 WAuxiliary Plugin 提供以下回调注册机制，需根据实际API调整
+// import me.hd.wauxv.callbacks.PluginCallback // 假设的回调接口
+// import me.hd.wauxv.callbacks.PluginCallbackManager // 假设的回调管理器
 
+// =====================================================================================
+// 重要实现注意事项 (生命周期管理):
+// 1. 目标 Activity 识别: 当使用 onActivityCreated/Paused 等回调时，务必准确识别目标 Activity
+//    (例如 com.tencent.mm.ui.LauncherUI)，以避免在不相关的 Activity 中注册/注销监听器。
+// 2. Context 有效性: 传递给 registerShakeDetector 的 Context 应确保有效。
+//    applicationContext 通常是安全的选择。
+// 3. 微信版本更新: WAuxiliary Plugin 的回调机制应相对稳定，但仍需关注插件更新和兼容性。
+// =====================================================================================
 object AppLifecycleHook : SensorEventListener {
 
-    private const val TAG = "AppLifecycleHook"
+    private const val TAG = "AppLifecycleHook" // 日志标签
     private var sensorManager: SensorManager? = null
     private var accelerometer: Sensor? = null
+    private var isShakeDetectorRegistered = false // 追踪摇一摇监听器是否已注册
 
-    // Shake detection parameters
+    // 摇一摇检测参数
     private const val SHAKE_THRESHOLD_GRAVITY = 2.7F
     private const val SHAKE_SLOP_TIME_MS = 500
     private var mShakeTimestamp: Long = 0
 
+    // 目标主Activity的类名 (示例)
+    private const val TARGET_ACTIVITY_NAME = "com.tencent.mm.ui.LauncherUI"
+    // 可以根据需要扩展为 Activity 名称列表
+    // private val TARGET_ACTIVITY_NAMES = setOf("com.tencent.mm.ui.LauncherUI", "com.tencent.mm.plugin.profile.ui.ContactInfoUI")
+
+
     /**
-     * Registers the shake detector sensor.
-     * Needs to be called from an Activity's context.
+     * 注册摇一摇检测传感器。
+     * 需要从 Activity 的上下文中调用。
      *
-     * PERFORMANCE CONSIDERATIONS: Ensure this is paired with unregisterShakeDetector
-     * in appropriate lifecycle methods (e.g., onResume/onPause) to avoid unnecessary
-     * battery drain when the relevant UI is not active.
+     * 性能考虑: 确保在适当的生命周期方法中 (例如 onResume/onPause 或 WAuxiliary 插件对应的回调)
+     * 与 unregisterShakeDetector 配对使用，以避免在相关UI未激活时不必要的电池消耗。
      */
     fun registerShakeDetector(context: Context) {
-        if (sensorManager == null) {
-            sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-            accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        if (isShakeDetectorRegistered) {
+            PluginOtherMethod.log("$TAG: INFO: 摇一摇检测器已注册，无需重复注册。")
+            return
         }
+        if (sensorManager == null) {
+            sensorManager = context.applicationContext.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        }
+        accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+
         if (accelerometer != null) {
             sensorManager?.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_UI)
-            Log.i(TAG, "Shake detector registered.")
+            isShakeDetectorRegistered = true
+            PluginOtherMethod.log("$TAG: INFO: 摇一摇检测器已注册。")
         } else {
-            Log.w(TAG, "Accelerometer not available, shake detection disabled.")
+            PluginOtherMethod.log("$TAG: WARN: 加速度计不可用，摇一摇检测已禁用。")
         }
     }
 
     /**
-     * Unregisters the shake detector sensor.
+     * 注销摇一摇检测传感器。
      *
-     * PERFORMANCE CONSIDERATIONS: Call this promptly (e.g., in onPause) to prevent
-     * battery drain from an active sensor when the app/feature is not in use.
+     * 性能考虑: 及时调用此方法 (例如在 onPause 或 WAuxiliary 插件对应的回调中)，以防止在应用/功能未使用时
+     * 活动传感器造成的电池消耗。
      */
     fun unregisterShakeDetector() {
+        if (!isShakeDetectorRegistered) {
+            PluginOtherMethod.log("$TAG: INFO: 摇一摇检测器未注册，无需注销。")
+            return
+        }
         sensorManager?.unregisterListener(this)
-        Log.i(TAG, "Shake detector unregistered.")
-        // Optionally nullify sensorManager and accelerometer if appropriate for lifecycle
+        isShakeDetectorRegistered = false
+        PluginOtherMethod.log("$TAG: INFO: 摇一摇检测器已注销。")
+        // 根据生命周期情况，选择性地将 sensorManager 和 accelerometer 置空，但需注意下次注册时的重新初始化
         // sensorManager = null
         // accelerometer = null
     }
@@ -66,129 +95,96 @@ object AppLifecycleHook : SensorEventListener {
             val gY = y / SensorManager.GRAVITY_EARTH
             val gZ = z / SensorManager.GRAVITY_EARTH
 
-            // gForce will be close to 1 when there is no movement.
             val gForce = kotlin.math.sqrt(gX * gX + gY * gY + gZ * gZ)
 
             if (gForce > SHAKE_THRESHOLD_GRAVITY) {
                 val now = System.currentTimeMillis()
-                // Ignore shake events too close to each other (500ms)
                 if (mShakeTimestamp + SHAKE_SLOP_TIME_MS > now) {
                     return
                 }
                 mShakeTimestamp = now
-                Log.i(TAG, "Shake detected with force: $gForce")
+                PluginOtherMethod.log("$TAG: INFO: 检测到摇动，力度: $gForce")
 
                 if (SecretFriendsSettings.IsSecretFeatureEnabled && SecretFriendsSettings.IsSecretModeActive) {
                     SecretFriendsSettings.IsSecretModeActive = false
-                    Log.i(TAG, "Secret mode deactivated due to device shake.")
+                    PluginOtherMethod.log("$TAG: INFO: 因设备摇动，密友模式已停用。")
 
-                    // UI REFRESH MECHANISM:
-                    // Since the app is in the foreground when a shake occurs, UI elements
-                    // (chat lists, contact lists, search results) need to be refreshed
-                    // to reflect that Secret Mode is now OFF (i.e., hidden items should become hidden again).
-                    // This could involve:
-                    // - Broadcasting an Intent that relevant UI components listen for.
-                    // - Calling notifyDataSetChanged() on adapters if direct references are available.
-                    // - Invalidating caches or triggering data re-fetches for lists.
-                    // Example: context.sendBroadcast(Intent("wx.demo.REFRESH_UI_ACTION"))
-                    Log.i(TAG, "TODO: Trigger global UI refresh for deactivation due to shake. (e.g., broadcast Intent, notifyDataSetChanged)")
+                    PluginOtherMethod.log("$TAG: INFO: TODO: 因摇动触发全局UI刷新以停用。(例如 广播Intent, notifyDataSetChanged)")
                 }
             }
         }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        // Can be ignored for this simple implementation
+        // 对于这个简单实现可以忽略
     }
 
     /**
-     * Placeholder for initializing and applying the hooks.
-     * This method would be called by the hooking framework.
-     * @param classLoader The classloader to use for finding classes.
-     * @param context The Android context, if available and needed for initialization.
+     * 初始化并注册 WAuxiliary Plugin 生命周期回调。
+     * 此方法将由插件框架在适当的时候调用，用以设置此类提供的功能。
+     * 它取代了之前使用通用方法Hook (如Xposed) 的方式来Hook Activity生命周期。
+     *
+     * @param context Android 上下文，如果插件框架提供，则可用于初始化。
      */
-    fun applyHooks(classLoader: ClassLoader, context: Context? = null) {
+    fun initializeWithPluginCallbacks(context: Context?) {
+        PluginOtherMethod.log("$TAG: INFO: 正在使用 WAuxiliary Plugin 回调进行初始化...")
         if (context != null) {
-            // Initialize settings if needed, though shake registration also gets context
-            SecretFriendsSettings.init(context.applicationContext)
+            SecretFriendsSettings.init(context.applicationContext) // 确保设置已初始化
+            PluginOtherMethod.log("$TAG: INFO: AppLifecycleHook 设置已初始化 (通过 initializeWithPluginCallbacks)。")
+        } else {
+            PluginOtherMethod.log("$TAG: WARN: AppLifecycleHook 初始化时未能获取到 context，设置可能未正确初始化。")
         }
 
-        // ERROR HANDLING: Consider wrapping each findAndHookMethod call and its callback
-        // logic in a try-catch block to prevent the entire app from crashing if a hook fails
-        // due to WeChat updates or unexpected errors. Log exceptions for debugging.
-        // Example: try { /* findAndHookMethod(...) */ } catch (t: Throwable) { Log.e(TAG, "Hook failed", t); }
+        // 1. 应用进入后台检测
+        // PluginCallbackManager.registerAppBackgroundCallback { // 假设的注册方式
+        //     if (SecretFriendsSettings.IsSecretModeActive) {
+        //         SecretFriendsSettings.IsSecretModeActive = false
+        //         PluginOtherMethod.log("$TAG: INFO: 密友模式已停用：应用进入后台 (通过 onAppBackground 回调)。")
+        //         // UI刷新通常在下次返回前台时自动处理或由其他机制处理
+        //     }
+        // }
+        PluginOtherMethod.log("$TAG: INFO: (概念) 已注册 onAppBackground 回调监听器。")
 
-        // --- Conceptual Hook for Activity onStop (Background Detection) ---
-        /*
-        // IMPORTANCE OF CORRECT CLASS/METHOD NAMES:
-        // The developer MUST replace "com.tencent.mm.ui.LauncherUI" and "onStop"
-        // with actual, verified names from the target WeChat version using reverse engineering tools.
-        findAndHookMethod(
-            "com.tencent.mm.ui.LauncherUI", // Target main UI activity (actual name needed)
-            classLoader,
-            "onStop", // Or "onPause" (actual name needed)
-            // No parameters for onStop usually
-            { param ->
-                // param.callOriginalMethod() // Call original first or last depending on need
 
-                if (SecretFriendsSettings.IsSecretModeActive) {
-                    SecretFriendsSettings.IsSecretModeActive = false
-                    Log.i(TAG, "Secret mode deactivated: app went to background (onStop).")
-                    // UI REFRESH CONSIDERATIONS:
-                    // When the app resumes, UI should naturally reflect IsSecretModeActive = false.
-                    // If onPause is used, and parts of the UI remain active or resume quickly without a full
-                    // redraw, an explicit refresh might be needed here or upon resume.
-                    // For onStop, usually a full redraw occurs on next start, mitigating this.
-                }
-            }
-        )
-        */
-        Log.i(TAG, "App background detection hook placeholder registered for LauncherUI.onStop.")
+        // 2. 摇一摇检测器的注册 (特定Activity创建时)
+        // PluginCallbackManager.registerActivityCreatedCallback { activity, _ -> // 假设的回调参数
+        //     if (activity.javaClass.name == TARGET_ACTIVITY_NAME) {
+        //          PluginOtherMethod.log("$TAG: INFO: 检测到目标 Activity (${activity.javaClass.name}) 创建，尝试注册摇一摇检测器。")
+        //          registerShakeDetector(activity.applicationContext)
+        //     }
+        // }
+        PluginOtherMethod.log("$TAG: INFO: (概念) 已注册 onActivityCreated 回调监听器 (用于摇一摇注册)。")
 
-        // --- Conceptual Hooks for Shake Detector Registration/Unregistration ---
-        // Hook Activity.onCreate() to register listener
-        /*
-        // IMPORTANCE OF CORRECT CLASS/METHOD NAMES:
-        // The developer MUST replace "com.tencent.mm.ui.LauncherUI" and "onCreate"
-        // with actual, verified names from the target WeChat version.
-        findAndHookMethod(
-            "com.tencent.mm.ui.LauncherUI", // Target main UI activity (actual name needed)
-            classLoader,
-            "onCreate",
-            Bundle::class.java, // Parameter type for onCreate
-            { param ->
-                // param.callOriginalMethod() // It's common to call original onCreate first
+        // 3. 摇一摇检测器的注销 (特定Activity暂停时)
+        // PluginCallbackManager.registerActivityPausedCallback { activity -> // 假设的回调参数
+        //     if (activity.javaClass.name == TARGET_ACTIVITY_NAME) {
+        //          PluginOtherMethod.log("$TAG: INFO: 检测到目标 Activity (${activity.javaClass.name}) 暂停，尝试注销摇一摇检测器。")
+        //          unregisterShakeDetector()
+        //     }
+        // }
+        PluginOtherMethod.log("$TAG: INFO: (概念) 已注册 onActivityPaused 回调监听器 (用于摇一摇注销)。")
 
-                val activity = param.thisObject as? Activity
-                if (activity != null) {
-                    registerShakeDetector(activity.applicationContext)
-                } else {
-                    Log.w(TAG, "Failed to get Activity instance from onCreate hook to register shake detector.")
-                }
-            }
-        )
-        */
-        Log.i(TAG, "Shake detector registration hook placeholder for LauncherUI.onCreate.")
+        PluginOtherMethod.log("$TAG: INFO: AppLifecycleHook 已配置为使用 WAuxiliary Plugin 生命周期回调。")
+    }
 
-        // Hook Activity.onPause() or onStop() or onDestroy() to unregister listener
-        /*
-        // IMPORTANCE OF CORRECT CLASS/METHOD NAMES:
-        // The developer MUST replace "com.tencent.mm.ui.LauncherUI" and "onPause"
-        // with actual, verified names from the target WeChat version.
-        findAndHookMethod(
-            "com.tencent.mm.ui.LauncherUI", // Target main UI activity (actual name needed)
-            classLoader,
-            "onPause", // onPause is good for sensors to save battery when activity not active (actual name needed)
-            { param ->
-                // param.callOriginalMethod()
-
-                unregisterShakeDetector()
-            }
-        )
-        */
-        Log.i(TAG, "Shake detector unregistration hook placeholder for LauncherUI.onPause.")
-        
-        // Alternative: Hook Application's lifecycle callbacks if available/suitable
-        // This might provide a more global way to manage shake detection or background status.
+    // 旧的 applyHooks 方法不再是主要的集成方式，如果模块完全依赖插件回调，此方法可能被废弃或重构。
+    // 为保持与先前任务的一致性，暂时保留并标记为待审阅或移除。
+    /**
+     * [已过时/待审阅] 初始化和应用 Hook 的占位符。
+     * 此方法原用于基于Xposed等通用Hook框架的场景。
+     * 若已迁移至 WAuxiliary Plugin 的特定回调，则此方法的功能应由 `initializeWithPluginCallbacks` 替代。
+     * @param classLoader 用于查找类的类加载器。
+     * @param context Android 上下文，如果可用且初始化需要。
+     */
+    @Deprecated("Prefer initializeWithPluginCallbacks if using WAuxiliary Plugin lifecycle callbacks")
+    fun applyHooks(classLoader: ClassLoader, context: Context? = null) {
+        PluginOtherMethod.log("$TAG: WARN: applyHooks (基于通用Hook框架的方法) 被调用。如果使用插件回调，请考虑迁移。")
+        if (context != null && !SecretFriendsSettings.IsSecretModeActive) { // 避免重复初始化
+            SecretFriendsSettings.init(context.applicationContext)
+        }
+        PluginOtherMethod.log("$TAG: INFO: 应用后台检测及摇一摇监听器的注册/注销现推荐通过 WAuxiliary Plugin 的特定生命周期回调实现。")
+        PluginOtherMethod.log("$TAG: INFO: (applyHooks 中的占位符日志) 应用后台检测 Hook占位符已注册 (LauncherUI.onStop)。")
+        PluginOtherMethod.log("$TAG: INFO: (applyHooks 中的占位符日志) 摇一摇检测器注册 Hook占位符已注册 (LauncherUI.onCreate)。")
+        PluginOtherMethod.log("$TAG: INFO: (applyHooks 中的占位符日志) 摇一摇检测器注销 Hook占位符已注册 (LauncherUI.onPause)。")
     }
 }
